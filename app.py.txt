@@ -1,0 +1,108 @@
+import streamlit as st
+from langchain.chains import ConversationalRetrievalChain
+from langchain_community.document_loaders import TextLoader
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEndpoint
+from langchain.text_splitter import CharacterTextSplitter
+import os
+
+# --- Configuration ---
+# For deployment on Hugging Face Spaces, set your HF_TOKEN in the "Secrets" section.
+HF_TOKEN = os.environ.get("HF_TOKEN")
+
+# --- UI Configuration ---
+st.set_page_config(page_title="Sarah Bessadi | Digital CV", page_icon="🚀", layout="wide")
+
+# --- Header Section ---
+with st.container():
+    st.title("Interactive CV for Sarah Bessadi")
+    st.subheader("Dual Master's Graduate: Process Engineering & International Business Management")
+    st.info(
+        "I am an AI agent trained on Sarah's professional profile. "
+        "Ask me anything about her skills, experience, or ambitions. "
+        "For example: 'What is her experience in Bid Management?' or 'Describe her role at GSK.'"
+    )
+    st.markdown(
+        "[View LinkedIn Profile](https://www.linkedin.com/in/sarah-bessadi/) | "
+        "**Email:** bessadisarah@gmail.com"
+    )
+
+# --- Caching the LangChain Chain for performance ---
+@st.cache_resource
+def load_chain():
+    """
+    Loads the LangChain conversational retrieval chain.
+    """
+    try:
+        # 1. Load the data from the profile text file
+        loader = TextLoader('./profile.txt', encoding='utf-8')
+        documents = loader.load()
+
+        # 2. Split the document into chunks for processing
+        text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+        docs = text_splitter.split_documents(documents)
+
+        # 3. Create embeddings using an open-source model
+        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
+
+        # 4. Create a FAISS vector store for efficient searching
+        vectorstore = FAISS.from_documents(docs, embeddings)
+
+        # 5. Set up the Language Model (LLM) from Hugging Face
+        if not HF_TOKEN:
+            st.error("Hugging Face API Token not found. Please set the HF_TOKEN secret for the app to work.")
+            return None
+            
+        repo_id = "mistralai/Mistral-7B-Instruct-v0.2"
+        llm = HuggingFaceEndpoint(
+            repo_id=repo_id, 
+            max_length=512, 
+            temperature=0.6, 
+            huggingfacehub_api_token=HF_TOKEN
+        )
+
+        # 6. Create the Conversational Retrieval Chain
+        chain = ConversationalRetrievalChain.from_llm(
+            llm=llm,
+            retriever=vectorstore.as_retriever(),
+            return_source_documents=False
+        )
+        return chain
+    except Exception as e:
+        st.error(f"An error occurred while loading the AI model: {e}")
+        return None
+
+# --- Main Application Logic ---
+chain = load_chain()
+
+if chain:
+    # Initialize session state for chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+        st.session_state.messages.append(
+            {"role": "assistant", "content": "Hello! How can I help you learn more about Sarah's profile?"}
+        )
+
+    # Display chat messages
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # Accept user input
+    if prompt := st.chat_input("Ask a question about Sarah..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # Generate and display response
+        with st.chat_message("assistant"):
+            with st.spinner("Analyzing profile..."):
+                chat_history = [(msg["role"], msg["content"]) for msg in st.session_state.messages if msg["role"] != 'assistant']
+                result = chain({"question": prompt, "chat_history": chat_history})
+                response = result['answer']
+                st.markdown(response)
+        
+        st.session_state.messages.append({"role": "assistant", "content": response})
+else:
+    st.warning("Chatbot is currently offline. Please ensure the Hugging Face token is configured correctly.")
